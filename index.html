@@ -430,11 +430,11 @@ const ETAPES_TOUTES = [
   ["speciale", "Ce qui n'appartient qu'à toi"],
   ["historique", "Ce qui t'a façonné"],
   ["identite", "Ton nom"],
-  ["table", "Ce que tu emportes"],
-  ["equipement", "Armes et armure"],
   ["traits", "Tes talents"],
   ["experiences", "Ton vécu"],
   ["cartes", "Tes pouvoirs"],
+  ["table", "Ce que tu emportes"],
+  ["equipement", "Armes et armure"],
   ["fin", "Ta fiche"]
 ];
 const TRAITS = [
@@ -1147,7 +1147,6 @@ vues.communaute = (root) => {
   for (const c of liste) {
     const seen = new Set();
     const corps = [ligneLore("Où :", c.ou, null), ligneLore("Qui :", c.qui, null), texteLong(c.description, null)];
-    c.suite.forEach((s) => corps.push(P(s, null)));
     if (c.traits) corps.push(P(c.traits, null, "meta"));
     const carte = carteRegles({
       rang: "Communauté", nom: c.carte, vo: c.vo, cle: "comm-" + c.id, seen,
@@ -1157,7 +1156,7 @@ vues.communaute = (root) => {
       groupe: "communaute", coche: state.communaute === c.id, image: "comm-" + c.id,
       badge: c.ancrages.includes(state.pays) ? "Courante là d'où tu viens" : "",
       titre: c.nom, corps, onchange: () => { state.communaute = c.id; },
-      details: [{ titre: "Voir les règles", noeud: carte }]
+      details: (c.suite.length ? [{ titre: "En savoir plus sur ce milieu", noeud: el("div", { class: "sous-texte" }, c.suite.map((t) => P(t, null))) }] : []).concat([{ titre: "Voir les règles", noeud: carte }])
     }));
   }
 };
@@ -1732,7 +1731,7 @@ vues.equipement = (root) => {
 vues.traits = (root) => {
   const s = sousDe();
   const c = classeDe();
-  root.append(el("p", {}, ["Ces trois dernières étapes sont plus techniques : elles règlent ce que ton personnage sait faire quand les dés roulent. Pour chacune, tu choisis si tu veux t'en occuper maintenant ou la voir avec le MJ."]));
+  root.append(el("p", {}, ["Les dernières étapes sont plus techniques : elles règlent ce que ton personnage sait faire quand les dés roulent, puis ce qu'il emporte. Pour chaque choix, tu décides si tu veux t'en occuper maintenant ou le voir avec le MJ."]));
   root.append(explication("À quoi servent les caractéristiques ?", [
     { texte: "Ton personnage a six talents naturels. Chacun a un modificateur : un petit nombre que tu ajoutes aux dés quand il tente quelque chose de risqué." },
     { titre: "Comment ça marche", items: [
@@ -1951,11 +1950,17 @@ vues.fin = (root) => {
     root.append(boite);
   }
   const actions = el("div", { class: "actions noprint" });
-  const dlBtn = el("button", { type: "button", class: "nav principal" }, ["Télécharger la fiche"]);
+  const dlBtn = el("button", { type: "button", class: "nav principal" }, ["Télécharger la fiche (.json)"]);
   dlBtn.addEventListener("click", () => {
     const reste = bloquants();
     if (reste.length) { document.getElementById("erreur").textContent = reste[0]; return; }
     telecharger();
+  });
+  const mdBtn = el("button", { type: "button", class: "nav" }, ["Note Obsidian (.md)"]);
+  mdBtn.addEventListener("click", () => {
+    const reste = bloquants();
+    if (reste.length) { document.getElementById("erreur").textContent = reste[0]; return; }
+    telechargerMd();
   });
   const imp = el("button", { type: "button", class: "nav" }, ["Imprimer"]);
   imp.addEventListener("click", () => window.print());
@@ -1966,9 +1971,9 @@ vues.fin = (root) => {
     try { localStorage.removeItem(CLE); } catch (e) {}
     render();
   });
-  actions.append(dlBtn, imp, eff);
+  actions.append(dlBtn, mdBtn, imp, eff);
   root.append(actions);
-  root.append(el("p", { class: "aide" }, ["Le fichier est une note pour le coffre du MJ. Envoie-le-lui. Il le rangera dans le dossier du groupe."]));
+  root.append(el("p", { class: "aide" }, ["Le fichier .json contient toute ta fiche : envoie-le au MJ, ou importe-le dans un autre outil. La note Obsidian est la même fiche, mise en page pour le coffre du MJ."]));
 };
 
 function yaml(s) {
@@ -2144,15 +2149,107 @@ function fiche() {
   }
   return lignes.join("\n");
 }
-function telecharger() {
-  const nom = (state.nom.trim() || "Personnage").replace(/[\\/:*?"<>|]/g, "").trim() || "Personnage";
+function texteBrut(h) {
+  const t = document.createElement("template");
+  t.innerHTML = String(h);
+  return t.content.textContent.replace(/\s+/g, " ").trim();
+}
+function blocsTexte(blocs) {
+  const out = [];
+  for (const b of blocs || []) {
+    if (b.p) out.push(texteBrut(b.p));
+    else if (b.ul) b.ul.forEach((x) => out.push("- " + texteBrut(x)));
+    else if (b.table) {
+      if (b.table.tete) out.push(b.table.tete.map(texteBrut).join(" | "));
+      b.table.lignes.forEach((r) => out.push(r.map(texteBrut).join(" | ")));
+    }
+  }
+  return out.join("\n");
+}
+function aptitudeJson(a, source) {
+  return Object.assign({ nom: a.nom, texte: blocsTexte(a.blocs) }, source ? { source } : {});
+}
+// La fiche, en données : les identifiants (id) sont ceux des pages du SRD, en anglais, pour l'import ailleurs.
+function fichierJson() {
+  const p = paysDe(), comm = commDe(), c = classeDe(), s = sousDe();
+  const tr = traitsEffectifs();
+  const eq = equipementEffectif();
+  const a1 = armeDe(eq.arme1), a2 = armeDe(eq.arme2), ar = armureDe(eq.armure);
+  const arme = (a) => a && { id: a.id, nom: a.nom, nom_vo: a.vo, emplacement: a.slot, caracteristique: a.trait, portee: a.portee, degats: a.degats, mains: a.mains, aptitudes: a.aptitudes.map((x) => aptitudeJson(x)) };
+  const apt = aptitudesRetenues();
+  const chx = chiffres();
+  const complet = Object.values(tr).every((v) => v != null);
+  const statut = (cle, ok) => (modeDe(cle) === "moi" ? "choisi par le joueur" : cle === "traits" ? "recommandé pour la classe" : cle === "equipement" ? "conseillé pour la classe" : "à voir avec le MJ à la séance zéro");
+  const rep = p ? (state.reponses[p.id] || []) : [];
+  const hist = c && state.historique[c.id] ? state.historique[c.id] : {};
+  const bonus = (i) => (aClank() && state.clank === String(i) ? 3 : 2);
+  const speciale = {};
+  if (c && c.id === "Warlock" && state.patronId) speciale.patron = { nom: state.patronId === "autre" ? (state.patronNom.trim() || null) : state.patronId, inventé_avec_le_mj: state.patronId === "autre", spheres: state.spheres.slice(), attente: state.patron.trim() || null };
+  if (c && c.id === "Wizard" && state.chiffre) speciale.motifs_etranges = state.chiffre;
+  if (c && c.id === "Druid" && state.forme) speciale.forme_bestiale_preferee = state.forme;
+  if (state.sousclasse === "Martial Artist") speciale.postures = state.postures.slice();
+  if (state.sousclasse === "Beastbound") speciale.compagnon = { animal: state.compagnon.animal.trim(), nom: state.compagnon.nom.trim(), experiences: state.compagnon.experiences.filter((x) => x.trim()).map((x) => ({ nom: x.trim(), bonus: 2 })), attaque: state.compagnon.attaque.trim(), degats: state.compagnon.degats === "mag" ? "magiques" : state.compagnon.degats === "phy" ? "physiques" : null, evasion: 10 };
+  return {
+    format: "bertalgain-personnage",
+    version: 1,
+    genere_le: new Date().toISOString(),
+    parcours: state.niveau || "normal",
+    joueur: state.joueur.trim(),
+    personnage: { nom: state.nom.trim(), pronoms: state.pronoms.trim() || null, apparence: state.apparence.trim() || null },
+    niveau: 1,
+    origine: p ? { id: p.id, nom: p.nom, page: p.page || null, reponses: p.questions.map((q, i) => ({ question: q.texte, reponse: (rep[i] || "").trim() })).filter((x) => x.reponse) } : null,
+    milieu: comm ? { id: comm.id, nom: comm.nom, carte_srd: comm.carte, nom_vo: comm.vo, aptitude: aptitudeJson(comm.aptitude) } : null,
+    peuple: {
+      mixte: state.mixte,
+      nom: state.mixte ? (state.heritage.trim() || apt.map((x) => x.peuple).join(" et ")) : (ascDe(state.ascendance) || {}).nom || null,
+      ids: state.mixte ? [state.haut, state.bas].filter(Boolean) : [state.ascendance].filter(Boolean),
+      aptitudes: apt.map((x) => aptitudeJson(x, { id: x.page, nom: x.peuple })),
+      souffle_element: state.souffle.trim() || null
+    },
+    classe: c ? {
+      id: c.id, nom: c.nom, nom_vo: c.vo,
+      sous_classe: s ? { id: s.id, nom: s.nom, nom_vo: s.vo, caracteristique_incantation: s.incantation || null } : null,
+      domaines: c.domaines.map((id) => ({ id, nom: donnees.domaines[id].nom })),
+      evasion_de_depart: c.evasion, points_de_vie_de_depart: c.pv,
+      aptitude_d_espoir: aptitudeJson(c.espoir),
+      aptitudes: c.aptitudes.filter((x) => x.nom !== "Astuce").map((x) => aptitudeJson(x)),
+      element: state.element || null,
+      particularites: speciale
+    } : null,
+    caracteristiques: { statut: statut("traits"), valeurs: complet ? { agilite: tr.agilite, force: tr.force, finesse: tr.finesse, instinct: tr.instinct, presence: tr.presence, savoir: tr.savoir } : null },
+    experiences: { statut: statut("experiences"), liste: modeDe("experiences") === "moi" ? state.experiences.map((x, i) => ({ nom: x.trim(), bonus: bonus(i) })).filter((x) => x.nom) : [] },
+    cartes_de_domaine: { statut: statut("cartes"), liste: modeDe("cartes") === "moi" ? cartesDeClasse().filter((x) => state.cartes.includes(x.id)).map((x) => ({ id: x.id, nom: x.nom, nom_vo: x.vo, domaine: x.domaine, type: x.type, cout_de_rappel: x.cout, texte: blocsTexte(x.blocs) })) : [] },
+    equipement: {
+      statut: statut("equipement"),
+      armes: [arme(a1), arme(a2)].filter(Boolean),
+      armure: ar ? { id: ar.id, nom: ar.nom, nom_vo: ar.vo, seuils_de_base: ar.seuils, score_de_base: ar.score, aptitudes: ar.aptitudes.map((x) => aptitudeJson(x)) } : null,
+      potion: state.potion === "soins" ? "potion de soins mineure" : state.potion === "endurance" ? "potion d'endurance mineure" : null,
+      objet_de_classe: state.objet || null,
+      inventaire: ["une torche", "15 mètres de corde", "des provisions de base", "une poignée d'or"]
+    },
+    chiffres_de_depart: chx ? { evasion: chx.evasion, points_de_vie: chx.pv, stress: chx.stress, espoir: chx.espoir, maitrise: 1, seuils_de_degats: { majeur: chx.seuils[0], severe: chx.seuils[1] }, score_d_armure: chx.armure, attaques: chx.armes, remarque: "Bonus fixes de l'équipement comptés ; à vérifier avec le MJ." } : null,
+    historique: c ? c.questions.map((q, i) => ({ question: q, reponse: (hist[i] || "").trim() })).filter((x) => x.reponse).concat((hist.libre || "").trim() ? [{ question: "Question du joueur", reponse: hist.libre.trim() }] : []) : [],
+    liens: { a_proposer: state.lien.trim() || null, questions_du_guide: c ? c.liens : [] }
+  };
+}
+function nomFichier() {
+  return (state.nom.trim() || "Personnage").replace(/[\\/:*?"<>|]/g, "").trim() || "Personnage";
+}
+function enregistrer(contenu, type, nom) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([fiche()], { type: "text/markdown;charset=utf-8" }));
-  a.download = nom + ".md";
+  a.href = URL.createObjectURL(new Blob([contenu], { type }));
+  a.download = nom;
   document.body.append(a);
   a.click();
   a.remove();
 }
+function telecharger() {
+  enregistrer(JSON.stringify(fichierJson(), null, 2), "application/json;charset=utf-8", nomFichier() + ".json");
+}
+function telechargerMd() {
+  enregistrer(fiche(), "text/markdown;charset=utf-8", nomFichier() + ".md");
+}
+
 
 
 /* ---------- Le panneau « ton personnage » ---------- */
@@ -2209,12 +2306,6 @@ function majRecap() {
   ligne("classe", "Vocation", c ? c.nom + (s ? ", " + s.nom : "") : "");
   if (aSpeciale()) ligne("speciale", "Ce qui n'appartient qu'à toi", resumeSpeciale());
   ligne("identite", "Nom", state.nom.trim() + (state.pronoms.trim() ? " (" + state.pronoms.trim() + ")" : ""));
-  ligne("table", "Dans sa besace", [state.potion === "soins" ? "potion de soins" : state.potion === "endurance" ? "potion d'endurance" : "", state.objet.charAt(0).toLowerCase() + state.objet.slice(1)].filter(Boolean).join(", "));
-  {
-    const eqp = equipementEffectif();
-    const nomsp = [armeDe(eqp.arme1), armeDe(eqp.arme2), armureDe(eqp.armure)].filter(Boolean).map((x) => x.nom);
-    ligne("equipement", "Armes et armure", modeDe("equipement") === "suggere" ? "conseillées pour la classe" : nomsp.join(", "));
-  }
   const tr = traitsEffectifs();
   if (modeDe("traits") && Object.values(tr).every((v) => v != null)) {
     const g = el("span", { class: "val mini-traits" });
@@ -2224,6 +2315,12 @@ function majRecap() {
   ligne("experiences", "Vécu", modeDe("experiences") === "plus-tard" ? "avec le MJ" : state.experiences.filter((x) => x.trim()).map((x) => x.trim() + " +2").join(", "));
   const cartes = cartesDeClasse().filter((x) => state.cartes.includes(x.id)).map((x) => x.nom).join(", ");
   ligne("cartes", "Pouvoirs", modeDe("cartes") === "plus-tard" ? "avec le MJ" : cartes);
+  ligne("table", "Dans sa besace", [state.potion === "soins" ? "potion de soins" : state.potion === "endurance" ? "potion d'endurance" : "", state.objet.charAt(0).toLowerCase() + state.objet.slice(1)].filter(Boolean).join(", "));
+  {
+    const eqp = equipementEffectif();
+    const nomsp = [armeDe(eqp.arme1), armeDe(eqp.arme2), armureDe(eqp.armure)].filter(Boolean).map((x) => x.nom);
+    ligne("equipement", "Armes et armure", modeDe("equipement") === "suggere" ? "conseillées pour la classe" : nomsp.join(", "));
+  }
   carte.append(ol);
   aside.replaceChildren(carte);
 }
@@ -2404,6 +2501,15 @@ function autotest() {
   state.i = indexEtape("traits");
   render();
   if (document.querySelectorAll('input[name="mode-traits"]').length !== 2) erreurs.push("question des caractéristiques");
+  // le fichier JSON
+  exemple();
+  const jf = JSON.parse(JSON.stringify(fichierJson()));
+  if (jf.format !== "bertalgain-personnage" || jf.classe.id !== "Guardian" || jf.milieu.id !== "Hearthborne") erreurs.push("json : identité");
+  if (Object.values(jf.caracteristiques.valeurs).reduce((a, b) => a + b, 0) !== 3) erreurs.push("json : caractéristiques");
+  if (jf.cartes_de_domaine.liste.length !== 2 || jf.experiences.liste.length !== 2) erreurs.push("json : cartes ou expériences");
+  if (!jf.equipement.armure || jf.equipement.armes[0].id !== "Battleaxe" || !jf.chiffres_de_depart || jf.chiffres_de_depart.evasion !== 8) erreurs.push("json : équipement");
+  if (/<[a-z]/i.test(JSON.stringify(jf))) erreurs.push("json : du HTML traîne");
+  if (JSON.stringify(jf).includes("Secret du MJ")) erreurs.push("json : secret");
   // la présentation, la licence et la consigne aux moteurs de recherche
   state = vierge(); state.i = 0; render();
   const introTxt = document.getElementById("main").textContent;
